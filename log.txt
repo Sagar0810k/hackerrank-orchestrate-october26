@@ -41,3 +41,86 @@ branch=main
 repo_root=C:\hackerrank-orchestrate-october26
 worktree=main
 parent_agent=none
+
+## [2026-10-24T22:23:40+05:30] Orchestration.md steps
+
+tool=Claude (claude.ai chat)
+model=Claude Sonnet 5.5
+Repo Root: C:\hackerrank-orchestrate-october26
+Branch: main
+Worktree: main
+Parent Agent: none
+Language: py
+Time Remaining: not configured
+
+Agent Response Summary:
+Read Orchestration.md in full. Step list in order, with status from the earlier log entries:
+
+Rules in force: one step at a time; look before you code; no hardcoding; Python stdlib only; code (not an LLM) writes steps_json; claims are not proof; ignore events after audit_at; check score after every change; update PROGRESS.md after every step.
+
+PART B - READ INPUT FILES (notes go to docs/DATA_NOTES.md)
+* B0 [DONE]    Inspect starter code (code/main.py and code/evaluation/main.py are empty placeholders; tree and notes recorded)
+* B1 [DONE]    deletion_rules.csv (15 rules; treatments DELETE/REDACT/ANONYMIZE/RETAIN; rules table in DATA_NOTES.md)
+* B2 [DONE]    deletion_requests.csv (518 rows) peeked; request_text classification still to be confirmed
+* B3 [PARTIAL] sample_deletion_requests.csv and sample_output.csv (32 cases) peeked; per-step "which input made this step" notes still to do
+* B4 [DONE]    user_identities.csv (850 rows) peeked
+* B5 [DONE]    user_audit_log.csv (306 rows) peeked
+* B6 [DONE]    system_activity.csv (4011 rows, 17 event types, 11 source systems) peeked; ghost pattern (delete then sync/restore) still to locate
+* B7 [DONE]    evidence_files.csv (94 files, all paths exist) peeked
+* B8 [PENDING] Open 2+ evidence files of each type (.sql, .log/.txt, .json, .pdf, image) and write how each is read
+* B9 [PENDING] Exit check: DATA_NOTES.md has rules table, operations seen in samples, how each evidence type is read, open questions
+
+PART C - BUILD STEPS
+* C1  [PENDING] code/audit/loader.py  - read every CSV into dicts, parse timestamps to timezone-aware datetime; test prints row counts from Part B
+* C2  [PENDING] code/audit/validate.py - validate_output(path): header, 518 sorted rows, status values, steps_json list, [] for NOT_APPLICABLE, step_no 1..n, 7 keys, phase order, allowed (phase, operation, state) triples; test on a good and a bad file
+* C3  [PENDING] code/evaluation/main.py - run pipeline on samples, print status accuracy, step accuracy, per-field accuracy, exact-sequence accuracy, per-case diffs; must run even with empty pipeline (score 0)
+* C4  [PENDING] code/audit/identity.py - email -> user_id (identities, then audit log), collect all emails/phones/hashes/names with validity ranges, never pull in another user who reused an old email
+* C5  [PENDING] code/audit/intent.py - deletion_requested True/False/unclear from request_text; tune on samples; NOT_APPLICABLE correct on all 32
+* C6  [PENDING] code/audit/evidence.py - Fact(system_id, resource_id, category, kind, state, identifiers_exposed, evidence_id, observed_at); extractors in order: SQL snapshots, system_activity.csv, JSON/log files, PDF/images
+* C7  [PENDING] code/audit/state.py - state at audit_at (drop events after audit_at, latest wins, later restore/sync means PRESENT again, "deleted" log line is not proof)
+* C8  [PENDING] code/audit/policy.py - category -> treatment from deletion_rules; mark problem type (remaining record, exposed PII, active data flow, restore risk)
+* C9  [PENDING] code/audit/planner.py and ordering.py - FINDING/REMEDIATION/VERIFICATION steps, sort key (phase_rank, operation_rank, system_id, resource_id), number steps from 1
+* C10 [PENDING] code/main.py - run pipeline on deletion_requests.csv, sort by case_id, write root output.csv, call validate_output
+
+PART D - IMPROVE SCORE (loop)
+* D1 [PENDING] Run evaluation -> pick single worst failure type -> Debug 1-2 cases -> smallest Code fix -> re-run; keep only if better; add row to failures table
+* D2 [PENDING] Generalization check: tune on half the samples, test on other half; run all 518 and hand-read 15 random outputs
+
+PART E - DEBUG CHECKLIST (used when a case is wrong)
+* E1 status wrong? check C5 intent, C4 identity, C6 missed fact
+* E2 missing findings? check identifier set and searched databases/files
+* E3 extra findings? check retained record, reused email, event after audit_at
+* E4 wrong order? ordering.py only
+* E5 wrong evidence_id? findings/COMPLETE verifications need real id; remediation and future verification use ""
+* E6 wrong operation? check policy lookup and C9 mapping
+* Before changing code, print: identifier set, facts found, state at audit_at, policy decision
+
+PART F - OPTIONAL LLM
+* F1 [PENDING] Only for unclear request_text and unreadable PDFs/images; strict JSON, temperature 0, cached by input hash, every call logged; keys from environment variables only
+
+PART G - PROGRESS FILE
+* G1 [ONGOING] Keep PROGRESS.md updated after every step (done steps, current step, latest sample score, known problems, open questions)
+
+PART H - REPORTS AND PACKAGING (last)
+* H1 [PENDING] code/evaluation/evaluation_report.md (sample metrics, 3+ custom test cases, failures table, limitations)
+* H2 [PENDING] code/evaluation/usage_report.md (from final full run; zero calls and zero cost if no LLM used)
+* H3 [PENDING] code/README.md (how to run, what each file does, dependencies, where LLM is used)
+* H4 [PENDING] Package code.zip (no dataset, caches, nested archives, secrets)
+* H5 [PENDING] Final checks: output.csv has 518 sorted rows and passes validate.py; log.txt complete
+
+PART I - WHEN STUCK
+* Print unknown columns, do not guess; deletion_rules.csv and samples win on conflicts; note unexplained samples in PROGRESS.md and move on; after 3 failed attempts on one problem switch to Ask mode or tell the human; never type a sample's answer into code
+
+Actions:
+* Read Orchestration.md (all 394 lines)
+
+Context:
+Next step is B8 (evidence files), then B9, then C1.
+
+## HANDOFF
+mode: Plan
+step: B8
+status: done
+changed_files: [log.txt]
+check_result: n/a
+next: Ask -> B8
