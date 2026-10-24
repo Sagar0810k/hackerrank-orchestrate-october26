@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict
 
-DATASET = Path("dataset")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DATASET = REPO_ROOT / "dataset"
 
 
 def parse_timestamp(value: str) -> datetime:

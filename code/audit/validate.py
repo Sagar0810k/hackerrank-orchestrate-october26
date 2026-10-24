@@ -66,6 +66,12 @@ class ValidationError(Exception):
     pass
 
 
+def case_sort_key(case_id: str):
+    """Natural order (case_99 before case_100), matching deletion_requests.csv."""
+    head, _, num = case_id.rpartition("_")
+    return (head, int(num)) if num.isdigit() else (case_id, 0)
+
+
 def validate_output(
     path: Path, expected_case_ids: Optional[List[str]] = None
 ) -> Tuple[bool, List[str]]:
@@ -92,7 +98,7 @@ def validate_output(
         if len(rows) != len(expected_case_ids):
             err(f"expected {len(expected_case_ids)} rows, got {len(rows)}")
         got_ids = [r.get("case_id", "") for r in rows]
-        if got_ids != sorted(expected_case_ids):
+        if got_ids != sorted(expected_case_ids, key=case_sort_key):
             err("rows not sorted by case_id or case_id set mismatch")
         if len(set(got_ids)) != len(got_ids):
             err("duplicate case_id present")
@@ -203,20 +209,3 @@ if __name__ == "__main__":
     for m in msgs:
         print(m)
     sys.exit(0 if ok else 1)
-
-
-
-def validate_output_strict(path: Path, expected_case_ids: List[str]) -> bool:
-    ok, msgs = validate_output(path, expected_case_ids)
-    for m in msgs:
-        print(m)
-    return ok
-
-
-if __name__ == "__main__":
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("output.csv")
-    ok, msgs = validate_output(target)
-    for m in msgs:
-        print(m)
-    sys.exit(0 if ok else 1)
-

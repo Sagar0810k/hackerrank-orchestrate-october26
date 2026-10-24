@@ -1,25 +1,41 @@
 """Evaluation script for Ghost Data Still Exists (Part C3).
 
-Compares predicted output.csv against dataset/sample_output.csv (32-case key).
-Prints status, step-level, per-field, exact-sequence accuracy plus per-case
-breakdown. Runs even if the pipeline produces nothing yet (score = 0).
+Runs the pipeline on the public sample requests and compares the result with
+``dataset/sample_output.csv`` (the only answer key participants have).
+
+Metrics
+-------
+* status accuracy      - deletion_status equal
+* step precision/recall/F1 - a predicted step is correct when an expected step
+  of the same case has identical phase, system_id, resource_id, operation,
+  state and evidence_id (step_no ignored, multiset matching)
+* field accuracy       - position-aligned comparison of each field over the
+  expected steps (step i vs step i)
+* sequence accuracy    - the whole ordered steps_json array is identical
+
+Usage:
+    python code/evaluation/main.py                 # samples
+    python code/evaluation/main.py --show-diff     # plus per-case missing/extra steps
+    python code/evaluation/main.py --predictions output_sample.csv   # score an existing file
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import sys
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Any, Dict, List, Tuple
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "code"))
 DATASET = REPO_ROOT / "dataset"
 SAMPLE_REQUESTS = DATASET / "sample_deletion_requests.csv"
 SAMPLE_OUTPUT = DATASET / "sample_output.csv"
-PREDICTIONS = REPO_ROOT / "output.csv"
 
-STEP_FIELDS = ["phase", "system_id", "resource_id", "operation", "state", "evidence_id"]
-ALL_STEP_KEYS = ["step_no"] + STEP_FIELDS
+FIELDS = ["phase", "system_id", "resource_id", "operation", "state", "evidence_id"]
+Result = Dict[str, Tuple[str, List[Dict[str, Any]]]]
 
 
 def load_csv(path: Path) -> List[Dict[str, str]]:
@@ -27,183 +43,155 @@ def load_csv(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-def load_predictions(path: Path) -> Dict[str, Tuple[str, List[Dict[str, Any]]]]:
-    out: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
-    if not path.exists():
-        return out
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            case_id = row["case_id"]
-            status = row["deletion_status"]
-            try:
-                steps = json.loads(row.get("steps_json", "[]"))
-            except json.JSONDecodeError:
-                steps = []
-            if not isinstance(steps, list):
-                steps = []
-            out[case_id] = (status, steps)
+def load_answers(path: Path) -> Result:
+    out: Result = {}
+    for row in load_csv(path):
+        try:
+            steps = json.loads(row.get("steps_json") or "[]")
+        except json.JSONDecodeError:
+            steps = []
+        out[row["case_id"]] = (row["deletion_status"], steps if isinstance(steps, list) else [])
     return out
 
 
-def load_expected(path: Path) -> Dict[str, Tuple[str, List[Dict[str, Any]]]]:
-    out: Dict[str, Tuple[str, List[Dict[str, Any]]]] = {}
-    with open(path, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            case_id = row["case_id"]
-            status = row["deletion_status"]
-            steps = json.loads(row.get("steps_json", "[]"))
-            out[case_id] = (status, steps)
-    return out
+def step_key(step: Dict[str, Any]) -> Tuple:
+    return tuple(step.get(f) for f in FIELDS)
 
 
-def _step_key(step: Dict[str, Any]) -> Tuple:
-    return tuple(step.get(f) for f in ALL_STEP_KEYS)
-
-
-def compare_case(
-    exp_status: str, exp_steps: List[Dict[str, Any]],
-    pred_status: str, pred_steps: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    result: Dict[str, Any] = {
-        "status_match": exp_status == pred_status,
-        "exp_steps": len(exp_steps),
-        "pred_steps": len(pred_steps),
-        "step_correct": 0,
-        "field_correct": {f: 0 for f in STEP_FIELDS},
-        "field_total": 0,
-        "sequence_exact": False,
-        "missing": [],
-        "extra": [],
-        "order_problems": False,
+def compare_case(exp: Tuple[str, List[Dict]], pred: Tuple[str, List[Dict]]) -> Dict[str, Any]:
+    e_status, e_steps = exp
+    p_status, p_steps = pred
+    e_cnt, p_cnt = Counter(map(step_key, e_steps)), Counter(map(step_key, p_steps))
+    tp = sum((e_cnt & p_cnt).values())
+    field_ok = {f: 0 for f in FIELDS}
+    for i, e in enumerate(e_steps):
+        p = p_steps[i] if i < len(p_steps) else {}
+        for f in FIELDS:
+            field_ok[f] += int(p.get(f) == e.get(f))
+    return {
+        "status_ok": e_status == p_status,
+        "exp_status": e_status, "pred_status": p_status,
+        "tp": tp, "n_exp": len(e_steps), "n_pred": len(p_steps),
+        "field_ok": field_ok,
+        "sequence_ok": [step_key(s) for s in e_steps] == [step_key(s) for s in p_steps]
+        and [s.get("step_no") for s in p_steps] == list(range(1, len(p_steps) + 1)),
+        "missing": sorted((e_cnt - p_cnt).elements()),
+        "extra": sorted((p_cnt - e_cnt).elements()),
     }
-    n = max(len(exp_steps), len(pred_steps))
-    matched = 0
-    for i in range(n):
-        e = exp_steps[i] if i < len(exp_steps) else None
-        p = pred_steps[i] if i < len(pred_steps) else None
-        if e is None:
-            result["extra"].append(p.get("step_no", i + 1) if p else i + 1)
-            continue
-        if p is None:
-            result["missing"].append(e.get("step_no", i + 1))
-            continue
-        for f in STEP_FIELDS:
-            result["field_total"] += 1
-            if p.get(f) == e.get(f):
-                result["field_correct"][f] += 1
-        if all(p.get(f) == e.get(f) for f in ALL_STEP_KEYS):
-            matched += 1
-    result["step_correct"] = matched
-    if len(exp_steps) == len(pred_steps) and all(
-        _step_key(e) == _step_key(p) for e, p in zip(exp_steps, pred_steps)
-    ):
-        result["sequence_exact"] = True
-    exp_keys = sorted(_step_key(s) for s in exp_steps)
-    pred_keys = sorted(_step_key(s) for s in pred_steps)
-    if exp_keys == pred_keys and not result["sequence_exact"]:
-        result["order_problems"] = True
-    return result
 
 
-def evaluate(
-    predictions: Dict[str, Tuple[str, List[Dict[str, Any]]]],
-    expected: Dict[str, Tuple[str, List[Dict[str, Any]]]],
-) -> Dict[str, Any]:
-    case_ids = sorted(expected.keys())
-    total = len(case_ids)
-    status_correct = 0
-    step_correct_total = 0
-    step_total = 0
-    field_correct = {f: 0 for f in STEP_FIELDS}
-    field_total = 0
-    sequence_exact = 0
-    per_case: List[Dict[str, Any]] = []
-
-    for cid in case_ids:
-        exp_status, exp_steps = expected[cid]
-        pred_status, pred_steps = predictions.get(cid, ("NOT_APPLICABLE", []))
-        r = compare_case(exp_status, exp_steps, pred_status, pred_steps)
-        r["case_id"] = cid
-        r["exp_status"] = exp_status
-        r["pred_status"] = pred_status
-        if exp_status == pred_status:
-            status_correct += 1
-        step_correct_total += r["step_correct"]
-        step_total += r["exp_steps"]
-        for f in STEP_FIELDS:
-            field_correct[f] += r["field_correct"][f]
-            field_total += r["field_total"]
-        if r["sequence_exact"]:
-            sequence_exact += 1
-        per_case.append(r)
-
-    safe_total = field_total if field_total else 1
-    metrics = {
-        "total": total,
-        "status_correct": status_correct,
-        "status_accuracy": status_correct / total if total else 0.0,
-        "step_correct": step_correct_total,
-        "step_total": step_total,
-        "step_accuracy": step_correct_total / step_total if step_total else 0.0,
-        "sequence_exact": sequence_exact,
-        "sequence_accuracy": sequence_exact / total if total else 0.0,
-        "field_correct": field_correct,
-        "field_total": safe_total,
-        "field_accuracy": {f: (field_correct[f] / safe_total) for f in STEP_FIELDS},
+def evaluate(pred: Result, exp: Result) -> Dict[str, Any]:
+    per_case = {}
+    for cid in exp:
+        per_case[cid] = compare_case(exp[cid], pred.get(cid, ("MISSING", [])))
+    n = len(per_case)
+    tp = sum(c["tp"] for c in per_case.values())
+    n_exp = sum(c["n_exp"] for c in per_case.values())
+    n_pred = sum(c["n_pred"] for c in per_case.values())
+    prec = tp / n_pred if n_pred else 0.0
+    rec = tp / n_exp if n_exp else 0.0
+    by_status: Dict[str, List[int]] = {}
+    for c in per_case.values():
+        by_status.setdefault(c["exp_status"], [0, 0])
+        by_status[c["exp_status"]][0] += int(c["status_ok"])
+        by_status[c["exp_status"]][1] += 1
+    return {
+        "cases": n,
+        "status_correct": sum(c["status_ok"] for c in per_case.values()),
+        "status_by_expected": by_status,
+        "step_tp": tp, "step_expected": n_exp, "step_predicted": n_pred,
+        "step_precision": prec, "step_recall": rec,
+        "step_f1": 2 * prec * rec / (prec + rec) if prec + rec else 0.0,
+        "field_accuracy": {f: (sum(c["field_ok"][f] for c in per_case.values()) / n_exp if n_exp else 0.0)
+                           for f in FIELDS},
+        "sequence_correct": sum(c["sequence_ok"] for c in per_case.values()),
         "per_case": per_case,
     }
-    return metrics
 
 
-def print_report(metrics: Dict[str, Any]) -> None:
-    print("=== Ghost Data Still Exists — Sample Evaluation ===")
-    print(f"Total sample cases: {metrics['total']}")
-    print(f"Status accuracy: {metrics['status_correct']}/{metrics['total']} = {metrics['status_accuracy']:.2%}")
-    print(f"Step-level accuracy: {metrics['step_correct']}/{metrics['step_total']} = {metrics['step_accuracy']:.2%}")
-    print(f"Exact-sequence accuracy: {metrics['sequence_exact']}/{metrics['total']} = {metrics['sequence_accuracy']:.2%}")
-    print("Per-field accuracy:")
-    for f in STEP_FIELDS:
-        print(f"  {f}: {metrics['field_correct'][f]}/{metrics['field_total']} = {metrics['field_accuracy'][f]:.2%}")
-    print()
-    print("--- Wrong cases ---")
-    wrong = [c for c in metrics["per_case"] if not c["status_match"] or not c["sequence_exact"]]
-    for c in wrong:
-        problems = []
-        if not c["status_match"]:
-            problems.append(f"status exp={c['exp_status']} pred={c['pred_status']}")
-        if c["missing"]:
-            problems.append(f"missing steps {c['missing']}")
-        if c["extra"]:
-            problems.append(f"extra steps {c['extra']}")
-        if c["order_problems"]:
-            problems.append("order problem")
-        print(f"  {c['case_id']}: " + "; ".join(problems) if problems else f"  {c['case_id']}: OK")
-    if not wrong:
-        print("  (none)")
+def report(m: Dict[str, Any], show_diff: bool = False) -> str:
+    lines = [
+        f"cases: {m['cases']}",
+        f"status accuracy: {m['status_correct']}/{m['cases']} = {m['status_correct'] / m['cases']:.2%}",
+        "status by expected label: " + ", ".join(f"{k} {v[0]}/{v[1]}" for k, v in sorted(m["status_by_expected"].items())),
+        f"step precision: {m['step_tp']}/{m['step_predicted']} = {m['step_precision']:.2%}",
+        f"step recall:    {m['step_tp']}/{m['step_expected']} = {m['step_recall']:.2%}",
+        f"step F1:        {m['step_f1']:.2%}",
+        f"sequence accuracy: {m['sequence_correct']}/{m['cases']} = {m['sequence_correct'] / m['cases']:.2%}",
+        "field accuracy (position-aligned over expected steps):",
+    ]
+    lines += [f"  {f:12s} {v:.2%}" for f, v in m["field_accuracy"].items()]
+    wrong = {cid: c for cid, c in m["per_case"].items() if not (c["status_ok"] and c["sequence_ok"])}
+    lines.append(f"cases not exactly right: {len(wrong)}")
+    for cid, c in wrong.items():
+        lines.append(f"  {cid}: status {c['pred_status']} (exp {c['exp_status']}), "
+                     f"{c['tp']}/{c['n_exp']} expected steps found, {c['n_pred'] - c['tp']} extra")
+        if show_diff:
+            for s in c["missing"]:
+                lines.append(f"      - missing {s}")
+            for s in c["extra"]:
+                lines.append(f"      + extra   {s}")
+    return "\n".join(lines)
 
 
-def run_pipeline_on_samples() -> Dict[str, Tuple[str, List[Dict[str, Any]]]]:
-    try:
-        sys.path.insert(0, str(REPO_ROOT / "code"))
-        import main  # type: ignore
-        if hasattr(main, "run_pipeline"):
-            requests = load_csv(SAMPLE_REQUESTS)
-            return main.run_pipeline(requests)
-    except Exception:
-        pass
-    return {}
+def custom_suite() -> Tuple[List[Dict[str, str]], Result, Dict[str, str]]:
+    """Requests, expected answers and purposes of the participant-made cases."""
+    from evaluation.custom_cases import CUSTOM_CASES
+    samples = load_answers(SAMPLE_OUTPUT)
+    requests, expected, purposes = [], {}, {}
+    for case in CUSTOM_CASES:
+        requests.append({"case_id": case["case_id"], **case["request"]})
+        purposes[case["case_id"]] = case["purpose"]
+        if "expected_from_sample" in case:
+            expected[case["case_id"]] = samples[case["expected_from_sample"]]
+        else:
+            exp = case["expected"]
+            steps = [dict(zip(["phase", "system_id", "resource_id", "operation", "state", "evidence_id"], s),
+                          step_no=i) for i, s in enumerate(exp["steps"], start=1)]
+            expected[case["case_id"]] = (exp["deletion_status"], steps)
+    return requests, expected, purposes
 
 
-def main() -> None:
-    expected = load_expected(SAMPLE_OUTPUT)
-    predictions = run_pipeline_on_samples()
-    if not predictions:
-        predictions = load_predictions(PREDICTIONS)
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--predictions", help="score an existing predictions CSV instead of running the pipeline")
+    ap.add_argument("--requests", default=str(SAMPLE_REQUESTS))
+    ap.add_argument("--answers", default=str(SAMPLE_OUTPUT))
+    ap.add_argument("--custom", action="store_true", help="run the participant-made custom cases")
+    ap.add_argument("--show-diff", action="store_true")
+    ap.add_argument("--json", help="write metrics JSON here")
+    args = ap.parse_args(argv)
+
+    if args.custom:
+        import main as pipeline
+        requests, expected, purposes = custom_suite()
+        predictions = pipeline.run_pipeline(requests)
+        metrics = evaluate(predictions, expected)
+        for cid, c in metrics["per_case"].items():
+            ok = "PASS" if c["status_ok"] and c["sequence_ok"] else "FAIL"
+            print(f"{ok} {cid}: {purposes[cid]}")
+            print(f"     status {c['pred_status']} (expected {c['exp_status']}), "
+                  f"{c['tp']}/{c['n_exp']} expected steps, {c['n_pred'] - c['tp']} extra")
+            for s in c["missing"]:
+                print(f"       - missing {s}")
+            for s in c["extra"]:
+                print(f"       + extra   {s}")
+        print(report(metrics))
+        return 0
+
+    expected = load_answers(Path(args.answers))
+    if args.predictions:
+        predictions = load_answers(Path(args.predictions))
+    else:
+        import main as pipeline  # code/main.py
+        predictions = pipeline.run_pipeline(load_csv(Path(args.requests)))
     metrics = evaluate(predictions, expected)
-    print_report(metrics)
+    print(report(metrics, args.show_diff))
+    if args.json:
+        slim = {k: v for k, v in metrics.items() if k != "per_case"}
+        Path(args.json).write_text(json.dumps(slim, indent=2), encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
-
+    sys.exit(main())

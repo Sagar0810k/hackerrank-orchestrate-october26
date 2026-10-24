@@ -1,5 +1,12 @@
 # HackerRank Orchestrate - October 2026
 
+> **Submission: how to run.** Python 3.10+ standard library only, with no installs, API keys or network.
+> From the repository root: `python code/main.py` writes and validates `output.csv` (518 rows);
+> `python code/evaluation/main.py` scores the 32 samples; `python code/evaluation/main.py --custom`
+> runs the participant-made cases. Architecture and design decisions: [`code/README.md`](./code/README.md).
+> Reports: [`code/evaluation/evaluation_report.md`](./code/evaluation/evaluation_report.md),
+> [`code/evaluation/usage_report.md`](./code/evaluation/usage_report.md).
+
 ## Ghost Data Still Exists
 
 Build an AI agent that audits whether a user's personal data was actually deleted.
